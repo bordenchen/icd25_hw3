@@ -8,24 +8,20 @@
 
 #include <stdio.h>
 #include <string.h>
-#include "parser.h"
+#include <stdlib.h>
+#include "parser.h"   /* bison header */
+#include "loc.h"      /* for LocType */
 
-int fileno(FILE *);
+#define YY_USER_ACTION do {                                       \
+  yylloc.first_line   = line_no;                                   \
+  yylloc.first_column = col_no;                                    \
+  col_no += yyleng;                                                \
+  yylloc.last_line    = line_no;                                   \
+  yylloc.last_column  = col_no ? (col_no - 1) : 0;                 \
+} while(0)
 
-#define YY_USER_ACTION     col_no += yyleng; // note this line
-
-#define RETURN(FUNC, TOKEN) { \
-  {FUNC;} return TOKEN; \
-}
-
-#define MAX_LINE_LENG      256
-#define LIST       strcat(buffer, yytext)
-#define LIST_FLUSH do{ if(opt_list) printf("%s", buffer); *buffer = 0; }while(0)
-#define LOG(TYPE) do{ LIST; if(opt_token) fprintf(stderr, "token(type:%-10s) on line %4d, %3d : %s\n", #TYPE, line_no, col_no - yyleng, yytext); } while(0)
-
-int opt_list = 1, opt_token = 0;
-int line_no = 1, col_no = 1;
-char buffer[MAX_LINE_LENG];
+extern int line_no, col_no, opt_list, opt_token;
+extern char buffer[];
 
 %}
 
@@ -108,24 +104,41 @@ DIGIT [0-9]
 "<="                         RETURN(LOG(KEYWORD), LETOP);
 "!="                         RETURN(LOG(KEYWORD), NEQOP);    
 
-[a-zA-Z](([a-zA-Z0-9_])*[a-zA-Z0-9])?       RETURN(LOG(IDENTIFIER), IDENTIFIER);
 
-{DIGIT}+                                    RETURN(LOG(NUMBER), INTEGERNUM); // integer
-{DIGIT}+"."{DIGIT}+                         RETURN(LOG(NUMBER), REALNUMBER); // real
-{DIGIT}+{E}[+-]?{DIGIT}+                    RETURN(LOG(NUMBER), SCIENTIFIC); // scientific
-{DIGIT}+"."{DIGIT}+{E}[+-]?{DIGIT}+         RETURN(LOG(NUMBER), SCIENTIFIC); // scientific
+  /* --- identifiers --- */
+[a-zA-Z][a-zA-Z0-9_]* {
+  /* attach semantic value */
+  yylval.text = strdup(yytext);
+  LIST; return IDENTIFIER;
+}
+
+  /* --- integers --- */
+[0-9]+ {
+  yylval.ival = strtol(yytext, NULL, 10);
+  LIST; return INTEGERNUM;
+}
 
 
-\"([^\n\"]|\\\")*\" {
-  LOG(STRING);
-  col_no = col_no - yyleng;
-  for(int c = 0; c < strlen(yytext); c++){
-    if (yytext[c] == '\n'){
-      line_no++, col_no = 1;
-    }
-    else col_no++;
-  }
-  return(LITERALSTR);
+  /* --- real (with optional exponent) --- */
+[0-9]+"."[0-9]+([eE][+-]?[0-9]+)? {
+  yylval.dval = strtod(yytext, NULL);
+  LIST; return REALNUMBER;
+}
+
+  /* --- scientific (integer+exp like 1e-3) --- */
+[0-9]+[eE][+-]?[0-9]+ {
+  yylval.dval = strtod(yytext, NULL);
+  LIST; return SCIENTIFIC;
+}
+
+  /* --- strings (strip outer quotes; keep your newline accounting) --- */
+\"([^\"\n]|\\\")*\" {
+  size_t n = yyleng;
+  char *s = (char*)malloc(n - 1);
+  memcpy(s, yytext + 1, n - 2);
+  s[n - 2] = '\0';
+  yylval.text = s;
+  LIST; return LITERALSTR;
 }
 
 "//"[^\n]* {
