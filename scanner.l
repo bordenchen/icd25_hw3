@@ -8,29 +8,20 @@
 
 #include <stdio.h>
 #include <string.h>
-#include "ast.h"
 #include "parser.h"
 
 int fileno(FILE *);
 
-#define YY_USER_ACTION \
-    yylloc.first_line = line_no; \
-    yylloc.first_column = col_no; \
-    col_no += yyleng;
+#define YY_USER_ACTION     col_no += yyleng; // note this line
+
+#define RETURN(FUNC, TOKEN) { \
+  {FUNC;} return TOKEN; \
+}
 
 #define MAX_LINE_LENG      256
 #define LIST       strcat(buffer, yytext)
 #define LIST_FLUSH do{ if(opt_list) printf("%s", buffer); *buffer = 0; }while(0)
-#define LOG(TYPE) \
-    do{ LIST; \
-        if(opt_token) \
-        fprintf(stderr, "token(type:%-10s) on line %4d, %3d : %s\n", \
-            #TYPE, line_no, col_no - yyleng, yytext); \
-    } while(0)
-
-#ifdef __cplusplus
-extern "C" int yylex(void);
-#endif
+#define LOG(TYPE) do{ LIST; if(opt_token) fprintf(stderr, "token(type:%-10s) on line %4d, %3d : %s\n", #TYPE, line_no, col_no - yyleng, yytext); } while(0)
 
 int opt_list = 1, opt_token = 0;
 int line_no = 1, col_no = 1;
@@ -67,66 +58,100 @@ W [wW]
 X [xX]
 Y [yY]
 Z [zZ]
+BLANKS [ \t]*
+
+DIGIT [0-9]
+
+%x COMMENT
 
 %%
-                             /* v could do something */
-{P}{R}{O}{G}{R}{A}{M}       {LOG(KEYWORD); return(PROGRAM);    }
-{V}{A}{R}                   {LOG(KEYWORD); return(VAR);        }
-{A}{R}{R}{A}{Y}             {LOG(KEYWORD); return(ARRAY);      }
-{O}{F}                      {LOG(KEYWORD); return(OF);         }
-{I}{N}{T}{E}{G}{E}{R}       {LOG(KEYWORD); return(INTEGER);    }
-{R}{E}{A}{L}                {LOG(KEYWORD); return(REAL);       }
-{S}{T}{R}{I}{N}{G}          {LOG(KEYWORD); return(STRING);     }
-{F}{U}{N}{C}{T}{I}{O}{N}    {LOG(KEYWORD); return(FUNCTION);   }
-{P}{R}{O}{C}{E}{D}{U}{R}{E} {LOG(KEYWORD); return(PROCEDURE);  }
-{B}{E}{G}{I}{N}             {LOG(KEYWORD); return(PBEGIN);     }
-{E}{N}{D}                   {LOG(KEYWORD); return(END);        }
-{I}{F}                      {LOG(KEYWORD); return(IF);         }
-{T}{H}{E}{N}                {LOG(KEYWORD); return(THEN);       }
-{E}{L}{S}{E}                {LOG(KEYWORD); return(ELSE);       }
-{W}{H}{I}{L}{E}             {LOG(KEYWORD); return(WHILE);      }
-{D}{O}                      {LOG(KEYWORD); return(DO);         }
-{N}{O}{T}                   {LOG(KEYWORD); return(NOT);        }
-{A}{N}{D}                   {LOG(KEYWORD); return(AND);        }
-{O}{R}                      {LOG(KEYWORD); return(OR);         }
 
-"("                         {LOG(KEYWORD); return(LPAREN);     }
-")"                         {LOG(KEYWORD); return(RPAREN);     }
-";"                         {LOG(KEYWORD); return(SEMICOLON);  }
-"."                         {LOG(KEYWORD); return(DOT);        }
-","                         {LOG(KEYWORD); return(COMMA);      }
-":"                         {LOG(KEYWORD); return(COLON);      }
-"["                         {LOG(KEYWORD); return(LBRACE);     }
-"]"                         {LOG(KEYWORD); return(RBRACE);     }
-".."                        {LOG(KEYWORD); return(DOTDOT);     }
-":="                        {LOG(KEYWORD); return(ASSIGNMENT); }
-"+"                         {LOG(KEYWORD); return(ADDOP);      }
-"-"                         {LOG(KEYWORD); return(SUBOP);      }
-"*"                         {LOG(KEYWORD); return(MULOP);      }
-"/"                         {LOG(KEYWORD); return(DIVOP);      }
-">"                         {LOG(KEYWORD); return(GTOP);       }
-"<"                         {LOG(KEYWORD); return(LTOP);       }
-"="                         {LOG(KEYWORD); return(EQOP);       }
-">="                        {LOG(KEYWORD); return(GETOP);      }
-"<="                        {LOG(KEYWORD); return(LETOP);      }
-"!="                        {LOG(KEYWORD); return(NEQOP);      }
+  /* keywords (case-insensitive via %option caseless) */
+{P}{R}{O}{G}{R}{A}{M}        RETURN(LOG(KEYWORD), PROGRAM);
+{V}{A}{R}                    RETURN(LOG(KEYWORD), VAR);
+{A}{R}{R}{A}{Y}              RETURN(LOG(KEYWORD), ARRAY);
+{O}{F}                       RETURN(LOG(KEYWORD), OF);
+{I}{N}{T}{E}{G}{E}{R}        RETURN(LOG(KEYWORD), INTEGER);
+{R}{E}{A}{L}                 RETURN(LOG(KEYWORD), REAL);
+{S}{T}{R}{I}{N}{G}           RETURN(LOG(KEYWORD), STRING);
+{F}{U}{N}{C}{T}{I}{O}{N}     RETURN(LOG(KEYWORD), FUNCTION);
+{P}{R}{O}{C}{E}{D}{U}{R}{E}  RETURN(LOG(KEYWORD), PROCEDURE);
+{B}{E}{G}{I}{N}              RETURN(LOG(KEYWORD), PBEGIN);
+{E}{N}{D}                    RETURN(LOG(KEYWORD), END);
+{I}{F}                       RETURN(LOG(KEYWORD), IF);
+{T}{H}{E}{N}                 RETURN(LOG(KEYWORD), THEN);
+{E}{L}{S}{E}                 RETURN(LOG(KEYWORD), ELSE);
+{W}{H}{I}{L}{E}              RETURN(LOG(KEYWORD), WHILE);
+{D}{O}                       RETURN(LOG(KEYWORD), DO);
+{N}{O}{T}                    RETURN(LOG(KEYWORD), NOT);
+{A}{N}{D}                    RETURN(LOG(KEYWORD), AND);
+{O}{R}                       RETURN(LOG(KEYWORD), OR);
 
-  /* define identifier here */
+"("                          RETURN(LOG(KEYWORD), LPAREN);
+")"                          RETURN(LOG(KEYWORD), RPAREN);
+";"                          RETURN(LOG(KEYWORD), SEMICOLON);
+"."                          RETURN(LOG(KEYWORD), DOT);
+","                          RETURN(LOG(KEYWORD), COMMA);
+":"                          RETURN(LOG(KEYWORD), COLON);
+"["                          RETURN(LOG(KEYWORD), LBRACE);
+"]"                          RETURN(LOG(KEYWORD), RBRACE);
+".."                         RETURN(LOG(KEYWORD), DOTDOT);
+":="                         RETURN(LOG(KEYWORD), ASSIGNMENT);
+"+"                          RETURN(LOG(KEYWORD), ADDOP);
+"-"                          RETURN(LOG(KEYWORD), SUBOP);
+"*"                          RETURN(LOG(KEYWORD), MULOP);
+"/"                          RETURN(LOG(KEYWORD), DIVOP);
+">"                          RETURN(LOG(KEYWORD), GTOP);
+"<"                          RETURN(LOG(KEYWORD), LTOP);
+"="                          RETURN(LOG(KEYWORD), EQOP);
+">="                         RETURN(LOG(KEYWORD), GETOP);
+"<="                         RETURN(LOG(KEYWORD), LETOP);
+"!="                         RETURN(LOG(KEYWORD), NEQOP);    
 
-  /* define INTEGERNUM, REALNUMBER, SCIENTIFIC here */
+[a-zA-Z](([a-zA-Z0-9_])*[a-zA-Z0-9])?       RETURN(LOG(IDENTIFIER), IDENTIFIER);
 
-  /* define single/multiple line comment here */
+{DIGIT}+                                    RETURN(LOG(NUMBER), INTEGERNUM); // integer
+{DIGIT}+"."{DIGIT}+                         RETURN(LOG(NUMBER), REALNUMBER); // real
+{DIGIT}+{E}[+-]?{DIGIT}+                    RETURN(LOG(NUMBER), SCIENTIFIC); // scientific
+{DIGIT}+"."{DIGIT}+{E}[+-]?{DIGIT}+         RETURN(LOG(NUMBER), SCIENTIFIC); // scientific
 
-  /* define string constant (LITERALSTR) here */
 
-  /* define pragma here */
+\"([^\n\"]|\\\")*\" {
+  LOG(STRING);
+  col_no = col_no - yyleng;
+  for(int c = 0; c < strlen(yytext); c++){
+    if (yytext[c] == '\n'){
+      line_no++, col_no = 1;
+    }
+    else col_no++;
+  }
+  return(LITERALSTR);
+}
 
- /*
-    yylval.text = strdup, strndup ... (yytext)
-    yylval.dval = atoi, atof, strtod, strtol ... (yytext)
- */
+"//"[^\n]* {
+  LIST;
+  if(opt_token) fprintf(stderr, "[INFO ] line %4d:%3d comment string\n", line_no, col_no - yyleng);
+}
 
-[ \t\f\r]    LIST;
+"/*" {
+  LIST;
+  if(opt_token) fprintf(stderr, "[INFO ] line %4d:%3d comment string start\n", line_no, col_no - yyleng);
+  BEGIN(COMMENT);
+}
+
+<COMMENT>"*/" {
+  LIST;
+  BEGIN(INITIAL);
+  if(opt_token) fprintf(stderr, "[INFO ] line %4d:%3d comment string end\n", line_no, col_no - yyleng);
+}
+
+<COMMENT>\n {
+  LIST;
+  LIST_FLUSH;
+  line_no++, col_no = 1;
+}
+
+<COMMENT>. { LIST; }
 
 \n {
   LIST;
@@ -134,4 +159,14 @@ Z [zZ]
   line_no++, col_no = 1;
 }
 
+[ \t\f\r]         LIST;
+
+#[ \t]*{P}{R}{A}{G}{M}{A}[ \t]+{T}{O}{K}{E}{N}[ \t]+{O}{N}    { LIST; opt_token = 1; }
+#[ \t]*{P}{R}{A}{G}{M}{A}[ \t]+{T}{O}{K}{E}{N}[ \t]+{O}{F}{F} { LIST; opt_token = 0; }
+
+
+#[ \t]*{P}{R}{A}{G}{M}{A}[ \t]+{L}{I}{S}{T}[ \t]+{O}{N}    { LIST; opt_list = 1; }
+#[ \t]*{P}{R}{A}{G}{M}{A}[ \t]+{L}{I}{S}{T}[ \t]+{O}{F}{F} { LIST; opt_list = 0; }
+
 .  { LIST; fprintf(stderr, "[ERROR] line %4d:%3d lexical analyzer error %s\n", line_no, col_no - yyleng, yytext); }
+
