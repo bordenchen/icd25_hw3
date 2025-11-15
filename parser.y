@@ -70,6 +70,7 @@ static void sym_type_to_string(Sym *s, char *buf, size_t n);
 static ParamList *paramlist_append(ParamList *head, Type *ty);
 static void mark_function_return(const char *name, LocType loc);
 
+
 /* ------------ small helpers to report semantic errors ------------ */
 
 static void report_redef_var(LocType loc, const char *name) {
@@ -321,6 +322,74 @@ static Cons appendStr(Cons list, char *s) {
     return list;
 }
 
+
+/* --------- very simple type inference for assignment checking --------- */
+static Type *node_type(Node n);
+
+static Type *type_of_identifier(const char *name, LocType loc) {
+    Sym *s = lookup_symbol(name);
+    if (!s) {
+        report_undec_var(loc, name);
+        return NULL;
+    }
+    return s->type;
+}
+
+static Type *type_of_index(Type *t, LocType loc, const char *name) {
+    if (!t || t->kind != TY_ARRAY) {
+        /* indexing non-array → "too many subscripten" */
+        report_index_many(loc, name);
+        return NULL;
+    }
+    return t->elem;
+}
+
+static Type *node_type(Node n) {
+    if (!n) return NULL;
+
+    switch (n->nt) {
+    case VarNode:
+        return type_of_identifier(n->as.var.name, n->loc);
+
+    /* index expression: a[b], k[1][2], etc. */
+    case IndexNode:
+        return type_of_index(
+            node_type(n->as.idx.base),
+            n->loc,
+            n->as.idx.base->as.var.name
+        );
+
+    case IntNode:
+        return tyInt();
+
+    case RealNode:
+        return tyReal();
+
+    case StrNode:
+        return tyString();
+
+    case BinNode: {
+        Type *L = node_type(n->as.bin.lhs);
+        Type *R = node_type(n->as.bin.rhs);
+        if (!L || !R) return NULL;
+
+        /* Here we just distinguish numeric vs non-numeric; you can refine later */
+        if ((L->kind != TY_INT && L->kind != TY_REAL) ||
+            (R->kind != TY_INT && R->kind != TY_REAL)) {
+            /* We'll use this later for "type errors in arithmetic expressions" */
+            return NULL;
+        }
+        /* result type: real if any operand is real, else int */
+        if (L->kind == TY_REAL || R->kind == TY_REAL)
+            return tyReal();
+        return tyInt();
+    }
+
+    default:
+        return NULL;
+    }
+}
+
 %}
 
 
@@ -492,6 +561,11 @@ expr_list_opt
 func_decl
   : FUNCTION IDENTIFIER
     {
+      /* remember which function we are in */
+      current_function_name      = $2;
+      current_function_is_redef  = 0;
+      current_function_loc       =  @1;
+
       /* create a (temporarily) function symbol with NULL type; will set later */
       insert_symbol($2, OBJ_FUNC, NULL, NULL, @2);
       open_scope();
@@ -503,8 +577,8 @@ func_decl
       Sym *s = lookup_symbol_in_scope($2, 0);
       if (s && s->kind == OBJ_FUNC) {
           if (s->type) {
-              /* already had a type: this is a redefinition */
-              report_redef_fun(@2, $2);
+              /* already had a type: mark as redefinition, but don't print yet */
+              current_function_is_redef = 1;
           } else {
               s->type   = $8;
               s->params = plist;
@@ -514,12 +588,24 @@ func_decl
     var_section_opt
     block SEMICOLON
     {
-      /* check missing return value */
+      /* At the end of the function, emit diagnostics */
+
       Sym *s = lookup_symbol_in_scope($2, 0);
-      if (s && s->kind == OBJ_FUNC && !s->has_return) {
-          report_missing_ret(@2, $2);
+      if (s && s->kind == OBJ_FUNC) {
+          if (current_function_is_redef) {
+              /* For redefinitions, always produce BOTH lines, in this order: */
+              report_missing_ret(current_function_loc, current_function_name);
+              report_redef_fun(current_function_loc, current_function_name);
+          } else if (!s->has_return) {
+              /* For the first (real) definition, only complain if truly no return */
+              report_missing_ret(current_function_loc, current_function_name);
+          }
       }
+
       close_scope_and_dump();
+
+      current_function_name     = NULL;
+      current_function_is_redef = 0;
     }
   ;
 
@@ -536,17 +622,22 @@ statement_list
 
 statement
   : variable ASSIGNMENT expression
-    {
+        {
       /* if LHS is the function name in its own function, mark has_return */
-      /* simplest: variable is a VarNode with name: */
       if ($1 && $1->nt == VarNode) {
           mark_function_return($1->as.var.name, @1);
       }
 
       $$ = mkAssign($1, $3, @2);
 
-      /* Here is also a good place to do assignment type checking:
-         if (lhs type != rhs type), call report_assign_type(@2); */
+      /* -------- assignment type checking (for 39:10 etc.) -------- */
+      Type *TL = node_type($1);  /* type of LHS variable */
+      Type *TR = node_type($3);  /* type of RHS expression */
+
+      if (TL && TR && TL->kind != TR->kind) {
+          /* mismatch → "type errors on assignment statement" */
+          report_assign_type(@2);  /* @2 = location of ':=' (col 10) */
+      }
     }
   | IF expression THEN statement ELSE statement
                                      { $$ = mkIf($2, $4, $6, @1); }
