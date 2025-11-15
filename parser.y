@@ -4,12 +4,14 @@
 #include <stdint.h>
 #include <string.h>
 
-#include "error.h"
 #include "loc.h"
 #include "ast.h"     /* your AST header */
 
-extern int line_no, col_no, opt_list;
-extern char buffer[];
+#define MAX_LINE_LENG 256
+int line_no = 0, col_no = 0;
+int opt_list = 0, opt_token = 0;
+
+char buffer[MAX_LINE_LENG];
 extern FILE *yyin;        /* from lex */
 extern char *yytext;      /* from lex */
 extern int yyleng;
@@ -22,7 +24,10 @@ Node g_root = NULL;
 %}
 
 /* Make Bison use your LocType for locations */
-%code requires { #include "loc.h" }
+%code requires { 
+    #include "loc.h"   
+    #include "ast.h"   /* defines Node, Cons, Type */
+}
 %define api.location.type {LocType}
 %locations
 
@@ -63,12 +68,11 @@ Node g_root = NULL;
 
 prog
   : PROGRAM IDENTIFIER LPAREN identifier_list RPAREN SEMICOLON
-    /* ... (subprograms if you add them later) ... */
     block DOT
-    {
-      g_root = mkProg($2, $4, $8, @1);  /* use @1 (LocType) */
-      $$ = g_root;
-    }
+  {
+    g_root = mkProg($2, $4, $7, @1);
+    $$ = g_root;
+  }
   ;
 
 identifier_list
@@ -157,11 +161,26 @@ factor
 
 %%
 
-static void yyerror(const char *msg) {
+void yyerror(const char *msg) {
   /* You have info.txt for formats — this is syntax; your grader might
      want a specific format for parse errors; keep it consistent. */
   fprintf(stderr, "[ERROR] line %4d:%3d %s, Unmatched token: %s\n",
           yylloc.first_line ? (int)yylloc.first_line : line_no,
           yylloc.first_column ? (int)yylloc.first_column : (col_no ? col_no-1 : 1),
           msg ? msg : "syntax error", yytext ? yytext : "");
+}
+
+int main(int argc, const char *argv[]) {
+
+    if(argc > 2)
+        fprintf( stderr, "Usage: ./parser [filename]\n" ), exit(0);
+
+    FILE *fp = argc == 1 ? stdin : fopen(argv[1], "r");
+
+    if(fp == NULL)
+        fprintf( stderr, "Open file error\n" ), exit(-1);
+
+    yyin = fp;
+    yyparse();
+    return 0;
 }

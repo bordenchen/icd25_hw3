@@ -1,24 +1,31 @@
+%option noyywrap
 %{
-/*
- * scanner.l
- *
- * lex input file for pascal scanner
- *
- */
-
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include "parser.h"   /* bison header */
 #include "loc.h"      /* for LocType */
 
+int fileno(FILE *);
+
+#define RETURN(FUNC, TOKEN) { \
+  {FUNC;} return TOKEN; \
+}
+
+#define MAX_LINE_LENG      256
+#define LIST       strcat(buffer, yytext)
+#define LIST_FLUSH do{ if(opt_list) printf("%s", buffer); *buffer = 0; }while(0)
+#define LOG(TYPE) do{ LIST; if(opt_token) fprintf(stderr, "token(type:%-10s) on line %4d, %3d : %s\n", #TYPE, line_no, col_no - yyleng, yytext); } while(0)
+
+
+/* Replace your old macro with this: */
 #define YY_USER_ACTION do {                                       \
-  yylloc.first_line   = line_no;                                   \
-  yylloc.first_column = col_no;                                    \
-  col_no += yyleng;                                                \
-  yylloc.last_line    = line_no;                                   \
-  yylloc.last_column  = col_no ? (col_no - 1) : 0;                 \
-} while(0)
+  yylloc.first_line   = line_no;                                  \
+  yylloc.first_column = col_no;                                   \
+  col_no += yyleng;                                               \
+  yylloc.last_line    = line_no;                                  \
+  yylloc.last_column  = col_no ? (col_no - 1) : 0;                \
+} while(0);
 
 extern int line_no, col_no, opt_list, opt_token;
 extern char buffer[];
