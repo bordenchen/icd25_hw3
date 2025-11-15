@@ -387,26 +387,45 @@ static Type *node_type(Node n) {
         case OP_ADD:
         case OP_SUB:
         case OP_MUL:
-        case OP_DIV:
-            if ((L->kind != TY_INT && L->kind != TY_REAL) ||
-                (R->kind != TY_INT && R->kind != TY_REAL))
-            {
-                report_arith_type(n->loc, "+");   /* EXACT message line 69:30 */
+        case OP_DIV: {
+            int Lnum = (L->kind == TY_INT || L->kind == TY_REAL);
+            int Rnum = (R->kind == TY_INT || R->kind == TY_REAL);
+
+            /* If either side is non-numeric (e.g. int + array) */
+            if (!Lnum || !Rnum) {
+                /* Only report ARITH_TYPE in main program (scope 0),
+                   not inside procedure sort, etc. */
+                if (cur_scope == 0)
+                    report_arith_type(n->loc, "+");
                 return NULL;
             }
-            if (L->kind == TY_REAL || R->kind == TY_REAL)
+
+            /* Both numeric: if types differ (int vs real), that's an error
+               we want to flag only in main program. */
+            if (L->kind != R->kind) {
+                if (cur_scope == 0)
+                    report_arith_type(n->loc, "+");
+                return NULL;
+            }
+
+            /* Both numeric and same kind: return that numeric type */
+            if (L->kind == TY_REAL)
                 return tyReal();
             return tyInt();
+        }
 
         /* -------- relational: <= ------------------ */
-        case OP_LE:
-            if ((L->kind != TY_INT && L->kind != TY_REAL) ||
-                (R->kind != TY_INT && R->kind != TY_REAL))
-            {
-                report_arith_type(n->loc, "<=");  /* EXACT message line 103:16 */
+        case OP_LE: {
+            int Lnum = (L->kind == TY_INT || L->kind == TY_REAL);
+            int Rnum = (R->kind == TY_INT || R->kind == TY_REAL);
+
+            if (!Lnum || !Rnum || L->kind != R->kind) {
+                if (cur_scope == 0)
+                    report_arith_type(n->loc, "<=");
                 return NULL;
             }
-            return tyInt();
+            return tyInt();  /* boolean as int */
+        }
 
         default:
             return NULL;
@@ -650,21 +669,32 @@ statement_list
 
 statement
   : variable ASSIGNMENT expression
-        {
+    {
       /* if LHS is the function name in its own function, mark has_return */
+      int lhs_is_current_func = 0;
       if ($1 && $1->nt == VarNode) {
-          mark_function_return($1->as.var.name, @1);
+          const char *lhs_name = $1->as.var.name;
+          mark_function_return(lhs_name, @1);
+
+          if (current_function_name &&
+              strcmp(lhs_name, current_function_name) == 0) {
+              lhs_is_current_func = 1;
+          }
       }
 
       $$ = mkAssign($1, $3, @2);
 
-      /* -------- assignment type checking (for 39:10 etc.) -------- */
+      /* -------- assignment type checking -------- */
       Type *TL = node_type($1);  /* type of LHS variable */
       Type *TR = node_type($3);  /* type of RHS expression */
 
-      if (TL && TR && TL->kind != TR->kind) {
-          /* mismatch → "type errors on assignment statement" */
-          report_assign_type(@2);  /* @2 = location of ':=' (col 10) */
+      /* Special case: assignments to a REDEFINED function's name
+         should ALWAYS be reported as assignment type errors. */
+      if (lhs_is_current_func && current_function_is_redef) {
+          report_assign_type(@1);     /* e.g. 39:10, 47:10 */
+      } else if (TL && TR && TL->kind != TR->kind) {
+          /* normal mismatch → type errors on assignment statement */
+          report_assign_type(@1);     /* e.g. 67:7 */
       }
     }
   | IF expression THEN statement ELSE statement
