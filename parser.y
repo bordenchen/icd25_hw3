@@ -420,11 +420,10 @@ static Type *node_type(Node n) {
             int Rnum = (R->kind == TY_INT || R->kind == TY_REAL);
 
             if (!Lnum || !Rnum || L->kind != R->kind) {
-                if (cur_scope == 0)
-                    report_arith_type(n->loc, "<=");
+                report_arith_type(n->loc, "<=");
                 return NULL;
             }
-            return tyInt();  /* boolean as int */
+            return tyInt();
         }
 
         default:
@@ -701,16 +700,18 @@ statement
                                      { $$ = mkIf($2, $4, $6, @1); }
   | WHILE expression DO statement    { $$ = mkWhile($2, $4, @1); }
   | compound_statement               { $$ = $1; }
-  | IDENTIFIER LPAREN expr_list_opt RPAREN
+  | IDENTIFIER LPAREN
     {
-      /* procedure call as a standalone statement, e.g. sort(d); */
+      /* Check function/procedure BEFORE parsing arguments */
       Sym *s = lookup_symbol($1);
-      if (!s || (s->kind != OBJ_PROC && s->kind != OBJ_FUNC))
+      if (!s || (s->kind != OBJ_PROC && s->kind != OBJ_FUNC)) {
           report_undec_fun(@1, $1);
-      else {
-          /* optional: check arguments, WRONG_ARGS if mismatch */
       }
-      $$ = NULL;  /* no AST node needed for now */
+      /* do nothing else; just control the error order */
+    }
+    expr_list_opt RPAREN
+    {
+      $$ = NULL; /* no AST node needed for now */
     }
   | /* empty */                      { $$ = NULL; }
   ;
@@ -780,18 +781,19 @@ factor
   | NOT factor                                        { $$ = mkUn(OP_NOT, $2, @1); }
   | LPAREN expression RPAREN                         { $$ = $2; }
   | variable                                         { $$ = $1; }
-  | IDENTIFIER LPAREN expr_list_opt RPAREN
+  | IDENTIFIER LPAREN
     {
-      /* function / procedure call inside expression */
+      /* Check function before parsing arguments, to control error order */
       Sym *s = lookup_symbol($1);
       if (!s || (s->kind != OBJ_FUNC && s->kind != OBJ_PROC)) {
           report_undec_fun(@1, $1);
-      } else {
-          /* optional: check args vs s->params, emit WRONG_ARGS if mismatch */
       }
-      /* If needed, build a CallNode in the AST; for now we can just return
-         a variable node to keep AST simple: */
-      $$ = mkVar($1, @1);
+    }
+    expr_list_opt RPAREN
+    {
+      /* Build whatever node you use for function calls.
+         If you were previously using mkVar, keep that, or mkCall if you have it. */
+      $$ = mkVar($1, @1);  /* or mkCall($1, $4, @1); */
     }
   | INTEGERNUM                                       { $$ = mkInt($1, @1); }
   | REALNUMBER                                       { $$ = mkReal($1, @1); }
