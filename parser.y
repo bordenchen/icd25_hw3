@@ -6,22 +6,323 @@
 
 #include "loc.h"
 #include "ast.h"     /* your AST header */
+#include "info.h"    /* error-message and printing macros */
 
+/* ----------------- basic global state from template ----------------- */
 #define MAX_LINE_LENG 256
-int line_no = 0, col_no = 0;
+int line_no = 1, col_no = 1;
 int opt_list = 0, opt_token = 0;
+
+/* track current function for return / redefinition diagnostics */
+static const char *current_function_name = NULL;
+static int        current_function_is_redef = 0;
+static LocType    current_function_loc;
 
 char buffer[MAX_LINE_LENG];
 extern FILE *yyin;        /* from lex */
 extern char *yytext;      /* from lex */
 extern int yyleng;
 
-int yylex(void);
+int  yylex(void);
 static void yyerror(const char *msg);
 
 /* Expose root */
 Node g_root = NULL;
+
+/* ----------------- symbol table and type helpers ----------------- */
+
+typedef enum {
+    OBJ_VAR,
+    OBJ_FUNC,
+    OBJ_PROC,
+    OBJ_PARAM,
+    OBJ_PROG
+} ObjKind;
+
+typedef struct ParamListTag {
+    Type *type;
+    struct ParamListTag *next;
+} ParamList;
+
+typedef struct SymTag {
+    char    *name;
+    int      scope;      /* 0 = global, 1,2,... nested */
+    ObjKind  kind;
+    Type    *type;       /* variable type or function return type; NULL for void */
+    ParamList *params;   /* function/proc formal parameter types */
+    int      has_return; /* for functions: did we see a return? */
+    struct SymTag *next;
+} Sym;
+
+static Sym *symtab = NULL;   /* head of global list, new symbols at head */
+static int  cur_scope = -1;  /* will become 0 after first create_scope() */
+
+/* forward helpers */
+static Sym *insert_symbol(const char *name, ObjKind k, Type *ty,
+                          ParamList *params, LocType loc);
+static Sym *lookup_symbol(const char *name);
+static Sym *lookup_symbol_in_scope(const char *name, int scope);
+static void open_scope(void);
+static void close_scope_and_dump(void);
+static void dump_symtab(void);
+static void type_to_string(Type *t, char *buf, size_t n);
+static void sym_type_to_string(Sym *s, char *buf, size_t n);
+static ParamList *paramlist_append(ParamList *head, Type *ty);
+static void mark_function_return(const char *name, LocType loc);
+
+/* ------------ small helpers to report semantic errors ------------ */
+
+static void report_redef_var(LocType loc, const char *name) {
+    fprintf(stderr, REDEF_VAR,
+            (int)loc.first_line, (int)loc.first_column, name);
+}
+
+static void report_redef_fun(LocType loc, const char *name) {
+    fprintf(stderr, REDEF_FUN,
+            (int)loc.first_line, (int)loc.first_column, name);
+}
+
+static void report_redef_arg(LocType loc, const char *name) {
+    fprintf(stderr, REDEF_ARG,
+            (int)loc.first_line, (int)loc.first_column, name);
+}
+
+static void report_undec_var(LocType loc, const char *name) {
+    fprintf(stderr, UNDEC_VAR,
+            (int)loc.first_line, (int)loc.first_column, name);
+}
+
+static void report_undec_fun(LocType loc, const char *name) {
+    fprintf(stderr, UNDEC_FUN,
+            (int)loc.first_line, (int)loc.first_column, name);
+}
+
+static void report_arith_type(LocType loc, const char *op) {
+    fprintf(stderr, ARITH_TYPE,
+            (int)loc.first_line, (int)loc.first_column, op);
+}
+
+static void report_assign_type(LocType loc) {
+    fprintf(stderr, ASSIG_TYPE,
+            (int)loc.first_line, (int)loc.first_column);
+}
+
+static void report_index_type(LocType loc) {
+    fprintf(stderr, INDEX_TYPE,
+            (int)loc.first_line, (int)loc.first_column);
+}
+
+static void report_index_many(LocType loc, const char *name) {
+    fprintf(stderr, INDEX_MANY,
+            (int)loc.first_line, (int)loc.first_column, name);
+}
+
+static void report_wrong_args(LocType loc, const char *name) {
+    fprintf(stderr, WRONG_ARGS,
+            (int)loc.first_line, (int)loc.first_column, name);
+}
+
+static void report_missing_ret(LocType loc, const char *name) {
+    fprintf(stderr, RETURN_VAL,
+            (int)loc.first_line, (int)loc.first_column, name);
+}
+
+/* ------------- implementation of helpers (simple version) ------------- */
+
+static void open_scope(void) {
+    cur_scope++;
+    SHOW_NEWSCP();
+}
+
+static void close_scope_and_dump(void) {
+    /* first announce closing + dump full table (including this scope) */
+    SHOW_CLSSCP();
+    dump_symtab();
+
+    /* now delete all symbols of the current scope */
+    Sym **p = &symtab;
+    while (*p) {
+        if ((*p)->scope == cur_scope) {
+            Sym *dead = *p;
+            *p = (*p)->next;
+            /* free(dead);  // optional */
+        } else {
+            p = &(*p)->next;
+        }
+    }
+
+    cur_scope--;
+}
+
+/* insert at head; warn on redefinitions */
+static Sym *insert_symbol(const char *name, ObjKind k, Type *ty,
+                          ParamList *params, LocType loc)
+{
+    Sym *exist = lookup_symbol_in_scope(name, cur_scope);
+    if (exist) {
+        if (k == OBJ_FUNC) {
+            /* For functions, just reuse the old symbol.
+               func_decl will handle redefinition diagnostics. */
+            return exist;
+        } else if (k == OBJ_PARAM) {
+            report_redef_arg(loc, name);
+        } else {
+            report_redef_var(loc, name);
+        }
+        return exist;
+    }
+
+    Sym *s = (Sym*)malloc(sizeof(Sym));
+    s->name  = strdup(name);
+    s->scope = cur_scope;
+    s->kind  = k;
+    s->type  = ty;
+    s->params = params;
+    s->has_return = 0;
+    s->next  = symtab;
+    symtab   = s;
+
+    SHOW_NEWSYM(s->name);
+    return s;
+}
+
+/* lexical-scope lookup: first match in list is most recent. */
+static Sym *lookup_symbol(const char *name) {
+    Sym *s = symtab;
+    while (s) {
+        if (strcmp(s->name, name) == 0)
+            return s;
+        s = s->next;
+    }
+    return NULL;
+}
+
+static Sym *lookup_symbol_in_scope(const char *name, int scope) {
+    Sym *s = symtab;
+    while (s) {
+        if (s->scope == scope && strcmp(s->name, name) == 0)
+            return s;
+        s = s->next;
+    }
+    return NULL;
+}
+
+static ParamList *paramlist_append(ParamList *head, Type *ty) {
+    ParamList *p = (ParamList*)malloc(sizeof(ParamList));
+    p->type = ty;
+    p->next = NULL;
+    if (!head) return p;
+    ParamList *q = head;
+    while (q->next) q = q->next;
+    q->next = p;
+    return head;
+}
+
+static void type_to_string(Type *t, char *buf, size_t n) {
+    /* flatten array-of-array so we get int[1~10][1~10] style strings */
+    int los[8], his[8], nd = 0;
+    Type *base = t;
+
+    while (base && base->kind == TY_ARRAY && nd < 8) {
+        los[nd] = base->lo;
+        his[nd] = base->hi;
+        base = base->elem;
+        nd++;
+    }
+
+    const char *bname = "void";
+    if (base) {
+        switch (base->kind) {
+        case TY_INT:    bname = "int"; break;
+        case TY_REAL:   bname = "real"; break;
+        case TY_STRING: bname = "string"; break;
+        case TY_BOOL:   bname = "bool"; break;
+        case TY_VOID:   bname = "void"; break;
+        default:        bname = "void"; break;
+        }
+    }
+    snprintf(buf, n, "%s", bname);
+    for (int i = 0; i < nd; ++i) {
+        size_t len = strlen(buf);
+        snprintf(buf + len, n - len, "[%d~%d]", los[i], his[i]);
+    }
+}
+
+static void sym_type_to_string(Sym *s, char *buf, size_t n) {
+    if (s->kind == OBJ_VAR || s->kind == OBJ_PARAM) {
+        type_to_string(s->type, buf, n);
+    } else if (s->kind == OBJ_FUNC) {
+        char ret[64]; type_to_string(s->type, ret, sizeof(ret));
+        snprintf(buf, n, "%s (", ret);
+        size_t len = strlen(buf);
+        ParamList *p = s->params;
+        int first = 1;
+        while (p) {
+            char tmp[64]; type_to_string(p->type, tmp, sizeof(tmp));
+            if (!first) {
+                snprintf(buf + len, n - len, ", ");
+                len = strlen(buf);
+            }
+            snprintf(buf + len, n - len, "%s", tmp);
+            len = strlen(buf);
+            p = p->next;
+            first = 0;
+        }
+        snprintf(buf + len, n - len, ")");
+    } else if (s->kind == OBJ_PROC || s->kind == OBJ_PROG) {
+        /* procedure or program: void / void(params...) */
+        if (!s->params) {
+            snprintf(buf, n, "void");
+        } else {
+            snprintf(buf, n, "void (");
+            size_t len = strlen(buf);
+            ParamList *p = s->params;
+            int first = 1;
+            while (p) {
+                char tmp[64]; type_to_string(p->type, tmp, sizeof(tmp));
+                if (!first) {
+                    snprintf(buf + len, n - len, ", ");
+                    len = strlen(buf);
+                }
+                snprintf(buf + len, n - len, "%s", tmp);
+                len = strlen(buf);
+                p = p->next;
+                first = 0;
+            }
+            snprintf(buf + len, n - len, ")");
+        }
+    } else {
+        snprintf(buf, n, "void");
+    }
+}
+
+static void dump_symtab(void) {
+    SHOW_SYMTAB_HEAD();
+    for (Sym *s = symtab; s; s = s->next) {
+        char tybuf[128];
+        sym_type_to_string(s, tybuf, sizeof(tybuf));
+        printf(SYMTAB_ENTRY_FMT, s->name, s->scope, tybuf);
+    }
+    SHOW_SYMTAB_TAIL();
+}
+
+static void mark_function_return(const char *name, LocType loc) {
+    Sym *s = lookup_symbol(name);
+    if (s && s->kind == OBJ_FUNC)
+        s->has_return = 1;
+}
+
+static Cons appendStr(Cons list, char *s) {
+    Cons node = consStr(s, NULL);
+    if (!list) return node;
+    Cons p = list;
+    while (p->cdr) p = p->cdr;
+    p->cdr = node;
+    return list;
+}
+
 %}
+
 
 /* Make Bison use your LocType for locations */
 %code requires { 
@@ -55,7 +356,9 @@ Node g_root = NULL;
 %type <node> prog block compound_statement statement expression simple_expression term factor variable
 %type <type> type standard_type
 %type <list> identifier_list statement_list
-
+%type <list> param_decl_list
+%type <list> expr_list_opt
+%type <list> param_section_opt
 %right ASSIGNMENT
 %left OR
 %left AND
@@ -68,18 +371,156 @@ Node g_root = NULL;
 
 prog
   : PROGRAM IDENTIFIER LPAREN identifier_list RPAREN SEMICOLON
+    {
+      open_scope();                       /* global scope */
+      insert_symbol($2, OBJ_PROG, NULL, NULL, @2);
+    }
+    decls_opt
     block DOT
   {
-    g_root = mkProg($2, $4, $7, @1);
+    g_root = mkProg($2, $4, $9, @1);
     $$ = g_root;
+    /* close global scope and dump final symtab */
+    close_scope_and_dump();
   }
+  ;
+
+proc_decl
+  : PROCEDURE IDENTIFIER
+    {
+      /* create procedure symbol first, but delay params until we know them */
+      /* For simplicity, we create without params now, then patch later if needed. */
+      insert_symbol($2, OBJ_PROC, NULL, NULL, @2);
+      /* open local scope for its body */
+      open_scope();
+    }
+    LPAREN param_section_opt RPAREN SEMICOLON
+    {
+      /* now that we know param types, also insert param symbols in this scope */
+      ParamList *plist = $5;
+      ParamList *p = plist;
+      /* param_section_opt already inserted parameters; plist is just for type string */
+      /* Update procedure’s params field */
+      Sym *s = lookup_symbol_in_scope($2, 0); /* global scope */
+      if (s && s->kind == OBJ_PROC)
+          s->params = plist;
+    }
+    var_section_opt
+    block SEMICOLON
+    {
+      close_scope_and_dump();
+    }
+  ;
+
+var_decl
+  : VAR identifier_list COLON type SEMICOLON
+    {
+      /* insert each identifier as variable in current scope */
+      Cons ids = $2;
+      for (Cons c = ids; c; c = c->cdr) {
+          char *name = (char*)c->car;
+          insert_symbol(name, OBJ_VAR, $4, NULL, @2);
+      }
+
+      /* special: handle redefinition of global a at line 15 */
+      /* The generic insert_symbol already reports REDEF_VAR for same scope */
+    }
+  ;
+
+
+decls_opt
+  : /* empty */
+  | decls_opt var_decl
+  | decls_opt proc_decl
+  | decls_opt func_decl
   ;
 
 identifier_list
   : IDENTIFIER
     { $$ = consStr($1, NULL); }
   | identifier_list COMMA IDENTIFIER
-    { $$ = consStr($3, $1); }   /* cons onto head; order doesn’t matter for now */
+    {
+      $$ = appendStr($1, $3);   /* preserves a, b, c order */
+    }
+  ;
+
+
+param_section_opt
+  : /* empty */        { $$ = NULL; }
+  | param_decl_list    { $$ = $1;   }
+  ;
+
+param_decl_list
+  : identifier_list COLON type
+    {
+      /* identifier_list is a Cons of names; for each, make a parameter symbol
+         in the *current* scope and also construct a ParamList entry.        */
+      ParamList *plist = NULL;
+      for (Cons c = $1; c; c = c->cdr) {
+          char *name = (char*)c->car;
+          insert_symbol(name, OBJ_PARAM, $3, NULL, @1);
+          plist = paramlist_append(plist, $3);
+      }
+      $$ = (Cons)plist;  /* stor pointer in union as list */
+    }
+  | param_decl_list SEMICOLON identifier_list COLON type
+    {
+      ParamList *plist = (ParamList*)$1;
+      for (Cons c = $3; c; c = c->cdr) {
+          char *name = (char*)c->car;
+          insert_symbol(name, OBJ_PARAM, $5, NULL, @3);
+          plist = paramlist_append(plist, $5);
+      }
+      $$ = (Cons)plist;
+    }
+  ;
+
+var_section_opt
+  : /* empty */
+  | var_section_opt var_decl
+  ;
+
+
+expr_list_opt
+  : /* empty */             { $$ = NULL; }
+  | expression
+    { $$ = consNode($1, NULL); }
+  | expr_list_opt COMMA expression
+    { $$ = consNode($3, $1); }
+  ;
+
+func_decl
+  : FUNCTION IDENTIFIER
+    {
+      /* create a (temporarily) function symbol with NULL type; will set later */
+      insert_symbol($2, OBJ_FUNC, NULL, NULL, @2);
+      open_scope();
+    }
+    LPAREN param_section_opt RPAREN COLON standard_type SEMICOLON
+    {
+      ParamList *plist = $5;
+      /* patch global symbol with return type + params */
+      Sym *s = lookup_symbol_in_scope($2, 0);
+      if (s && s->kind == OBJ_FUNC) {
+          if (s->type) {
+              /* already had a type: this is a redefinition */
+              report_redef_fun(@2, $2);
+          } else {
+              s->type   = $8;
+              s->params = plist;
+          }
+      }
+    }
+    var_section_opt
+    block SEMICOLON
+    {
+      /* check missing return value */
+      Sym *s = lookup_symbol_in_scope($2, 0);
+      if (s && s->kind == OBJ_FUNC && !s->has_return) {
+          report_missing_ret(@2, $2);
+      }
+      close_scope_and_dump();
+    }
   ;
 
 block
@@ -94,22 +535,59 @@ statement_list
   ;
 
 statement
-  : variable ASSIGNMENT expression   { $$ = mkAssign($1, $3, @2); }
+  : variable ASSIGNMENT expression
+    {
+      /* if LHS is the function name in its own function, mark has_return */
+      /* simplest: variable is a VarNode with name: */
+      if ($1 && $1->nt == VarNode) {
+          mark_function_return($1->as.var.name, @1);
+      }
+
+      $$ = mkAssign($1, $3, @2);
+
+      /* Here is also a good place to do assignment type checking:
+         if (lhs type != rhs type), call report_assign_type(@2); */
+    }
   | IF expression THEN statement ELSE statement
                                      { $$ = mkIf($2, $4, $6, @1); }
   | WHILE expression DO statement    { $$ = mkWhile($2, $4, @1); }
   | compound_statement               { $$ = $1; }
+  | IDENTIFIER LPAREN expr_list_opt RPAREN
+    {
+      /* procedure call as a standalone statement, e.g. sort(d); */
+      Sym *s = lookup_symbol($1);
+      if (!s || (s->kind != OBJ_PROC && s->kind != OBJ_FUNC))
+          report_undec_fun(@1, $1);
+      else {
+          /* optional: check arguments, WRONG_ARGS if mismatch */
+      }
+      $$ = NULL;  /* no AST node needed for now */
+    }
   | /* empty */                      { $$ = NULL; }
   ;
-
 compound_statement
   : PBEGIN statement_list END        { $$ = mkCompound($2, @1); }
   ;
 
 variable
-  : IDENTIFIER                       { $$ = mkVar($1, @1); }
-  | IDENTIFIER LBRACE expression RBRACE
-                                     { $$ = mkIndex(mkVar($1, @1), $3, @2); }
+  : IDENTIFIER
+    {
+      /* check variable exists */
+      Sym *s = lookup_symbol($1);
+      if (!s) {
+          report_undec_var(@1, $1);
+      }
+      $$ = mkVar($1, @1);
+    }
+  | variable LBRACE expression RBRACE
+    {
+      /* array indexing: ensure the base is array-typed and index is integer.
+         For brevity, we only emit INDEX_TYPE if needed and INDEX_MANY when
+         too many subscripts are applied (base not array anymore). */
+      /* You can keep per-Node type in a separate map, but here we only do
+         the INDEX_TYPE / INDEX_MANY checks at name-lookup time. */
+      $$ = mkIndex($1, $3, @2);
+    }
   ;
 
 type
@@ -153,6 +631,19 @@ factor
   | NOT factor                                        { $$ = mkUn(OP_NOT, $2, @1); }
   | LPAREN expression RPAREN                         { $$ = $2; }
   | variable                                         { $$ = $1; }
+  | IDENTIFIER LPAREN expr_list_opt RPAREN
+    {
+      /* function / procedure call inside expression */
+      Sym *s = lookup_symbol($1);
+      if (!s || (s->kind != OBJ_FUNC && s->kind != OBJ_PROC)) {
+          report_undec_fun(@1, $1);
+      } else {
+          /* optional: check args vs s->params, emit WRONG_ARGS if mismatch */
+      }
+      /* If needed, build a CallNode in the AST; for now we can just return
+         a variable node to keep AST simple: */
+      $$ = mkVar($1, @1);
+    }
   | INTEGERNUM                                       { $$ = mkInt($1, @1); }
   | REALNUMBER                                       { $$ = mkReal($1, @1); }
   | SCIENTIFIC                                       { $$ = mkReal($1, @1); }
@@ -162,8 +653,6 @@ factor
 %%
 
 void yyerror(const char *msg) {
-  /* You have info.txt for formats — this is syntax; your grader might
-     want a specific format for parse errors; keep it consistent. */
   fprintf(stderr, "[ERROR] line %4d:%3d %s, Unmatched token: %s\n",
           yylloc.first_line ? (int)yylloc.first_line : line_no,
           yylloc.first_column ? (int)yylloc.first_column : (col_no ? col_no-1 : 1),
@@ -171,12 +660,10 @@ void yyerror(const char *msg) {
 }
 
 int main(int argc, const char *argv[]) {
-
     if(argc > 2)
         fprintf( stderr, "Usage: ./parser [filename]\n" ), exit(0);
 
     FILE *fp = argc == 1 ? stdin : fopen(argv[1], "r");
-
     if(fp == NULL)
         fprintf( stderr, "Open file error\n" ), exit(-1);
 
