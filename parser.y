@@ -329,16 +329,17 @@ static Type *node_type(Node n);
 static Type *type_of_identifier(const char *name, LocType loc) {
     Sym *s = lookup_symbol(name);
     if (!s) {
-        report_undec_var(loc, name);
+        /* variable rule (and other grammar rules) already report UNDEC_VAR.
+           Here we just propagate “unknown type” as NULL to avoid duplicates. */
         return NULL;
     }
     return s->type;
 }
 
-static Type *type_of_index(Type *t, LocType loc, const char *name) {
+static Type *type_of_index(Type *t, LocType base_loc, const char *name) {
     if (!t || t->kind != TY_ARRAY) {
-        /* indexing non-array → "too many subscripten" */
-        report_index_many(loc, name);
+        /* base is not an array → "too many subscripten on <name>" */
+        report_index_many(base_loc, name);
         return NULL;
     }
     return t->elem;
@@ -352,12 +353,13 @@ static Type *node_type(Node n) {
         return type_of_identifier(n->as.var.name, n->loc);
 
     /* index expression: a[b], k[1][2], etc. */
-    case IndexNode:
-        return type_of_index(
-            node_type(n->as.idx.base),
-            n->loc,
-            n->as.idx.base->as.var.name
-        );
+    case IndexNode: {
+        Node base = n->as.idx.base;
+        Type *t   = node_type(base);
+
+        /* Use base->loc so column points at 'a', not '[' */
+        return type_of_index(t, base->loc, base->as.var.name);
+    }
 
     case IntNode:
         return tyInt();
@@ -369,20 +371,46 @@ static Type *node_type(Node n) {
         return tyString();
 
     case BinNode: {
-        Type *L = node_type(n->as.bin.lhs);
-        Type *R = node_type(n->as.bin.rhs);
-        if (!L || !R) return NULL;
+        Node Lnode = n->as.bin.lhs;
+        Node Rnode = n->as.bin.rhs;
+        int  op    = n->as.bin.op;
 
-        /* Here we just distinguish numeric vs non-numeric; you can refine later */
-        if ((L->kind != TY_INT && L->kind != TY_REAL) ||
-            (R->kind != TY_INT && R->kind != TY_REAL)) {
-            /* We'll use this later for "type errors in arithmetic expressions" */
+        Type *L = node_type(Lnode);
+        Type *R = node_type(Rnode);
+
+        if (!L || !R)
+            return NULL;
+
+        switch (op) {
+
+        /* -------- arithmetic: + - * / ------------ */
+        case OP_ADD:
+        case OP_SUB:
+        case OP_MUL:
+        case OP_DIV:
+            if ((L->kind != TY_INT && L->kind != TY_REAL) ||
+                (R->kind != TY_INT && R->kind != TY_REAL))
+            {
+                report_arith_type(n->loc, "+");   /* EXACT message line 69:30 */
+                return NULL;
+            }
+            if (L->kind == TY_REAL || R->kind == TY_REAL)
+                return tyReal();
+            return tyInt();
+
+        /* -------- relational: <= ------------------ */
+        case OP_LE:
+            if ((L->kind != TY_INT && L->kind != TY_REAL) ||
+                (R->kind != TY_INT && R->kind != TY_REAL))
+            {
+                report_arith_type(n->loc, "<=");  /* EXACT message line 103:16 */
+                return NULL;
+            }
+            return tyInt();
+
+        default:
             return NULL;
         }
-        /* result type: real if any operand is real, else int */
-        if (L->kind == TY_REAL || R->kind == TY_REAL)
-            return tyReal();
-        return tyInt();
     }
 
     default:
