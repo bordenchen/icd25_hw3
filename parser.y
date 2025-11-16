@@ -698,7 +698,15 @@ statement
     }
   | IF expression THEN statement ELSE statement
                                      { $$ = mkIf($2, $4, $6, @1); }
-  | WHILE expression DO statement    { $$ = mkWhile($2, $4, @1); }
+  | WHILE expression
+      {
+          /* Type check the condition BEFORE parsing the body */
+          (void)node_type($2);
+      }
+      DO statement
+      {
+          $$ = mkWhile($2, $5, @1);
+      }
   | compound_statement               { $$ = $1; }
   | IDENTIFIER LPAREN
     {
