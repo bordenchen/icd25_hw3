@@ -564,7 +564,6 @@ proc_decl
   : PROCEDURE IDENTIFIER
     {
       /* create procedure symbol first, but delay params until we know them */
-      /* For simplicity, we create without params now, then patch later if needed. */
       insert_symbol($2, OBJ_PROC, NULL, NULL, @2);
       /* open local scope for its body */
       open_scope();
@@ -572,13 +571,26 @@ proc_decl
     LPAREN param_section_opt RPAREN SEMICOLON
     {
       /* now that we know param types, also insert param symbols in this scope */
-      ParamList *plist = $5;
-      ParamList *p = plist;
-      /* param_section_opt already inserted parameters; plist is just for type string */
-      /* Update procedure’s params field */
+      ParamList *plist = (ParamList*)$5;
       Sym *s = lookup_symbol_in_scope($2, 0); /* global scope */
       if (s && s->kind == OBJ_PROC)
           s->params = plist;
+    }
+    var_section_opt
+    block SEMICOLON
+    {
+      close_scope_and_dump();
+    }
+
+  /* ---- NEW form: PROCEDURE id ;  (no parameters) ---- */
+  | PROCEDURE IDENTIFIER
+    {
+      insert_symbol($2, OBJ_PROC, NULL, NULL, @2);
+      open_scope();
+    }
+    SEMICOLON
+    {
+      /* no params to patch: s->params stays NULL */
     }
     var_section_opt
     block SEMICOLON
@@ -827,6 +839,17 @@ statement
           $$ = mkWhile($2, $5, @1);
       }
   | compound_statement               { $$ = $1; }
+    /* procedure/function call with no parentheses, e.g. xxx; */
+  | IDENTIFIER
+    {
+      Sym *s = lookup_symbol($1);
+      if (!s || (s->kind != OBJ_PROC && s->kind != OBJ_FUNC)) {
+          /* match your existing call error style */
+          report_undec_fun(@1, $1);
+      }
+      $$ = NULL;   /* no AST node needed for now */
+    }
+
   | IDENTIFIER LPAREN
     {
       /* Check function/procedure BEFORE parsing arguments */
