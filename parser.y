@@ -253,23 +253,31 @@ static void sym_type_to_string(Sym *s, char *buf, size_t n) {
     if (s->kind == OBJ_VAR || s->kind == OBJ_PARAM) {
         type_to_string(s->type, buf, n);
     } else if (s->kind == OBJ_FUNC) {
-        char ret[64]; type_to_string(s->type, ret, sizeof(ret));
-        snprintf(buf, n, "%s (", ret);
-        size_t len = strlen(buf);
-        ParamList *p = s->params;
-        int first = 1;
-        while (p) {
-            char tmp[64]; type_to_string(p->type, tmp, sizeof(tmp));
-            if (!first) {
-                snprintf(buf + len, n - len, ", ");
-                len = strlen(buf);
-            }
-            snprintf(buf + len, n - len, "%s", tmp);
-            len = strlen(buf);
-            p = p->next;
-            first = 0;
-        }
-        snprintf(buf + len, n - len, ")");
+      char ret[64]; 
+      type_to_string(s->type, ret, sizeof(ret));
+
+      /* Count params; print "int" if zero, else "int ( ... )" */
+      int count = 0;
+      for (ParamList *q = s->params; q; q = q->next) count++;
+
+      if (count == 0) {
+          snprintf(buf, n, "%s", ret);
+      } else {
+          snprintf(buf, n, "%s (", ret);
+          size_t len = strlen(buf);
+          ParamList *p = s->params;
+          int first = 1;
+          while (p) {
+              char tmp[64]; 
+              type_to_string(p->type, tmp, sizeof(tmp));
+              if (!first) { snprintf(buf + len, n - len, ", "); len = strlen(buf); }
+              snprintf(buf + len, n - len, "%s", tmp); 
+              len = strlen(buf);
+              p = p->next; 
+              first = 0;
+          }
+          snprintf(buf + len, n - len, ")");
+      }
     } else if (s->kind == OBJ_PROC || s->kind == OBJ_PROG) {
         /* procedure or program: void / void(params...) */
         if (!s->params) {
