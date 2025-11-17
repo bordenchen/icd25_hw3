@@ -661,6 +661,46 @@ func_decl
       current_function_name     = NULL;
       current_function_is_redef = 0;
     }
+    /* ---- NEW form: FUNCTION id : type ;  (no parameters) ---- */
+  | FUNCTION IDENTIFIER
+    {
+      current_function_name      = $2;
+      current_function_is_redef  = 0;
+      current_function_loc       = @1;
+
+      insert_symbol($2, OBJ_FUNC, NULL, NULL, @2);
+      open_scope();
+    }
+    COLON standard_type SEMICOLON
+    {
+      ParamList *plist = NULL; /* no params */
+      Sym *s = lookup_symbol_in_scope($2, 0);
+      if (s && s->kind == OBJ_FUNC) {
+          if (s->type) {
+              current_function_is_redef = 1;
+          } else {
+              s->type   = $5;
+              s->params = plist;  /* NULL */
+          }
+      }
+    }
+    var_section_opt
+    block SEMICOLON
+    {
+      Sym *s = lookup_symbol_in_scope($2, 0);
+      if (s && s->kind == OBJ_FUNC) {
+          if (current_function_is_redef) {
+              report_missing_ret(current_function_loc, current_function_name);
+              report_redef_fun(current_function_loc, current_function_name);
+          } else if (!s->has_return) {
+              report_missing_ret(current_function_loc, current_function_name);
+          }
+      }
+      close_scope_and_dump();
+
+      current_function_name     = NULL;
+      current_function_is_redef = 0;
+    }
   ;
 
 block
