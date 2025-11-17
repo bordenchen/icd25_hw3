@@ -410,6 +410,17 @@ static Type *type_of_identifier(const char *name, LocType loc) {
            Here we just propagate “unknown type” as NULL to avoid duplicates. */
         return NULL;
     }
+    
+    /* Functions already have a proper return type in s->type.
+       Variables / array types also use s->type.
+       For procedures/programs, fabricate a non-numeric "void" type so that:
+         - using them in expressions (3 + ss) triggers ARITH_TYPE
+         - but they are never treated as numeric. */
+    if (!s->type && (s->kind == OBJ_PROC || s->kind == OBJ_PROG)) {
+        static Type voidTy = { TY_VOID, 0, 0, NULL };
+        return &voidTy;
+    }
+
     return s->type;
 }
 
