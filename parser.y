@@ -362,11 +362,24 @@ static Type *node_type(Node n) {
 
     /* index expression: a[b], k[1][2], etc. */
     case IndexNode: {
-        Node base = n->as.idx.base;
-        Type *t   = node_type(base);
+        Node base  = n->as.idx.base;
+        Type *t    = node_type(base);
 
-        /* Use base->loc so column points at 'a', not '[' */
-        return type_of_index(t, base->loc, base->as.var.name);
+        /* If a previous (left) index already failed (t == NULL),
+          don't report the same "too many subscripten" again. */
+        if (!t) return NULL;
+
+        /* Walk to the leftmost VarNode: that's the real array name (e.g., "c")
+          and its source location (line/column at the identifier), which is
+          what we want to print in diagnostics. */
+        Node root = base;
+        while (root && root->nt == IndexNode) root = root->as.idx.base;
+
+        const char *basename = (root && root->nt == VarNode) ? root->as.var.name : "";
+        LocType baseloc      = root ? root->loc : n->loc;
+
+        /* Use the root var's location and name so stderr matches exactly. */
+        return type_of_index(t, baseloc, basename);
     }
 
     case IntNode:
