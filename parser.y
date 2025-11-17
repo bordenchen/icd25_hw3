@@ -677,6 +677,12 @@ func_decl
       current_function_is_redef  = 0;
       current_function_loc       =  @1;
 
+      /* NEW: treat *any* existing symbol in global scope as a redefinition */
+      Sym *prev = lookup_symbol_in_scope($2, 0);
+      if (prev) {
+          current_function_is_redef = 1;
+      }
+
       /* create a (temporarily) function symbol with NULL type; will set later */
       insert_symbol($2, OBJ_FUNC, NULL, NULL, @2);
       open_scope();
@@ -702,13 +708,13 @@ func_decl
       /* At the end of the function, emit diagnostics */
 
       Sym *s = lookup_symbol_in_scope($2, 0);
-      if (s && s->kind == OBJ_FUNC) {
-          if (current_function_is_redef) {
-              /* For redefinitions, always produce BOTH lines, in this order: */
-              report_missing_ret(current_function_loc, current_function_name);
-              report_redef_fun(current_function_loc, current_function_name);
-          } else if (!s->has_return) {
-              /* For the first (real) definition, only complain if truly no return */
+      if (current_function_is_redef) {
+          /* Always emit BOTH lines at the function’s location */
+          report_missing_ret(current_function_loc, current_function_name);
+          report_redef_fun(current_function_loc, current_function_name);
+      } else {
+          /* Normal (non-redef) case: complain only if truly no return */
+          if (!s || (s->kind == OBJ_FUNC && !s->has_return)) {
               report_missing_ret(current_function_loc, current_function_name);
           }
       }
@@ -724,6 +730,12 @@ func_decl
       current_function_name      = $2;
       current_function_is_redef  = 0;
       current_function_loc       = @1;
+
+      /* NEW: treat *any* existing symbol in global scope as a redefinition */
+      Sym *prev = lookup_symbol_in_scope($2, 0);
+      if (prev) {
+          current_function_is_redef = 1;
+      }
 
       insert_symbol($2, OBJ_FUNC, NULL, NULL, @2);
       open_scope();
@@ -745,11 +757,13 @@ func_decl
     block SEMICOLON
     {
       Sym *s = lookup_symbol_in_scope($2, 0);
-      if (s && s->kind == OBJ_FUNC) {
-          if (current_function_is_redef) {
-              report_missing_ret(current_function_loc, current_function_name);
-              report_redef_fun(current_function_loc, current_function_name);
-          } else if (!s->has_return) {
+      if (current_function_is_redef) {
+          /* Always emit BOTH lines at the function’s location */
+          report_missing_ret(current_function_loc, current_function_name);
+          report_redef_fun(current_function_loc, current_function_name);
+      } else {
+          /* Normal (non-redef) case: complain only if truly no return */
+          if (!s || (s->kind == OBJ_FUNC && !s->has_return)) {
               report_missing_ret(current_function_loc, current_function_name);
           }
       }
