@@ -480,12 +480,15 @@ static Type *node_type(Node n) {
         case OP_DIV: {
             int Lnum = (L->kind == TY_INT || L->kind == TY_REAL);
             int Rnum = (R->kind == TY_INT || R->kind == TY_REAL);
-
+            
+            int in_function = (current_function_name != NULL);
+            int should_report = (cur_scope == 0) || in_function;
+            
             /* If either side is non-numeric (e.g. int + array) */
             if (!Lnum || !Rnum) {
                 /* Only report ARITH_TYPE in main program (scope 0),
                    not inside procedure sort, etc. */
-                if (cur_scope == 0)
+                if (should_report)
                     report_arith_type(n->loc, "+");
                 return NULL;
             }
@@ -493,7 +496,7 @@ static Type *node_type(Node n) {
             /* Both numeric: if types differ (int vs real), that's an error
                we want to flag only in main program. */
             if (L->kind != R->kind) {
-                if (cur_scope == 0)
+                if (should_report)
                     report_arith_type(n->loc, "+");
                 return NULL;
             }
@@ -899,7 +902,8 @@ statement
     }
     expr_list_opt RPAREN
     {
-      $$ = NULL; /* no AST node needed for now */
+      check_call_args(@1, $1, $4);
+      $$ = NULL;
     }
   | /* empty */                      { $$ = NULL; }
   ;
