@@ -436,6 +436,14 @@ static Type *node_type(Node n) {
     }
 }
 
+/* add near your other statics */
+static void close_all_scopes(void) {
+    /* close from innermost outwards */
+    while (cur_scope >= 0) {
+        close_scope_and_dump();
+    }
+}
+
 %}
 
 
@@ -828,5 +836,7 @@ int main(int argc, const char *argv[]) {
 
     yyin = fp;
     yyparse();
+    /* NEW: force-close any still-open scopes, so stdout matches */
+    close_all_scopes();
     return 0;
 }
