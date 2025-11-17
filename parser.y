@@ -250,6 +250,45 @@ static ParamList *paramlist_append(ParamList *head, Type *ty) {
     return head;
 }
 
+/* ---- check actual arguments against formal parameter list ---- */
+static Type *node_type(Node n);
+
+static void check_call_args(LocType loc, const char *name, Cons actuals) {
+    /* Find the function/procedure symbol */
+    Sym *s = lookup_symbol(name);
+    if (!s || (s->kind != OBJ_FUNC && s->kind != OBJ_PROC)) {
+        /* already handled by report_undec_fun elsewhere */
+        return;
+    }
+
+    ParamList *formal = s->params;
+    Cons a = actuals;
+    int ok = 1;
+
+    /* Compare types pairwise */
+    while (formal && a) {
+        Node *argNode = (Node*) &a->car;   /* a->car is Obj, really a Node */
+        Node  arg     = (Node)a->car;
+        Type *at      = node_type(arg);
+        Type *ft      = formal->type;
+
+        if (!at || !ft || at->kind != ft->kind) {
+            ok = 0;
+        }
+
+        formal = formal->next;
+        a      = a->cdr;
+    }
+
+    /* Extra or missing args? */
+    if (formal || a)
+        ok = 0;
+
+    if (!ok) {
+        report_wrong_args(loc, name);
+    }
+}
+
 static void type_to_string(Type *t, char *buf, size_t n) {
     /* flatten array-of-array so we get int[1~10][1~10] style strings */
     int los[8], his[8], nd = 0;
@@ -363,7 +402,6 @@ static Cons appendStr(Cons list, char *s) {
 
 
 /* --------- very simple type inference for assignment checking --------- */
-static Type *node_type(Node n);
 
 static Type *type_of_identifier(const char *name, LocType loc) {
     Sym *s = lookup_symbol(name);
@@ -941,8 +979,10 @@ factor
     }
     expr_list_opt RPAREN
     {
-      /* Build whatever node you use for function calls.
-         If you were previously using mkVar, keep that, or mkCall if you have it. */
+      /* Check arguments' number and types against formal params */
+      check_call_args(@1, $1, $4);
+
+      /* still build some node for the expression */
       $$ = mkVar($1, @1);  /* or mkCall($1, $4, @1); */
     }
   | INTEGERNUM                                       { $$ = mkInt($1, @1); }
