@@ -430,24 +430,39 @@ static Type *node_type(Node n) {
         return type_of_identifier(n->as.var.name, n->loc);
 
     /* index expression: a[b], k[1][2], etc. */
+        /* index expression: a[b], k[1][2], etc. */
     case IndexNode: {
         Node base  = n->as.idx.base;
-        Type *t    = node_type(base);
+        Node idx   = n->as.idx.index;
+
+        /* 1) Check the index expression's type.
+           If it is not integer → "array indexing must be integer". */
+        Type *idxT = node_type(idx);
+        if (idxT && idxT->kind != TY_INT) {
+            /* Use the index expression's own location so we get line 13, col 10
+               for:  d[3][rr] := 8.33   (rr starts at column 10) */
+            report_index_type(idx->loc);
+            return NULL;   /* stop here so we don't propagate a bogus type */
+        }
+
+        /* 2) Now check the base (what we are indexing). */
+        Type *t = node_type(base);
 
         /* If a previous (left) index already failed (t == NULL),
-          don't report the same "too many subscripten" again. */
+           don't report the same "too many subscripten" again. */
         if (!t) return NULL;
 
         /* Walk to the leftmost VarNode: that's the real array name (e.g., "c")
-          and its source location (line/column at the identifier), which is
-          what we want to print in diagnostics. */
+           and its source location (line/column at the identifier), which is
+           what we want to print in diagnostics. */
         Node root = base;
         while (root && root->nt == IndexNode) root = root->as.idx.base;
 
         const char *basename = (root && root->nt == VarNode) ? root->as.var.name : "";
         LocType baseloc      = root ? root->loc : n->loc;
 
-        /* Use the root var's location and name so stderr matches exactly. */
+        /* Use the root var's location and name so "too many subscripten on c"
+           still matches the required stderr format on other tests. */
         return type_of_index(t, baseloc, basename);
     }
 
