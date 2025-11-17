@@ -243,7 +243,7 @@ static void type_to_string(Type *t, char *buf, size_t n) {
         }
     }
     snprintf(buf, n, "%s", bname);
-    for (int i = 0; i < nd; ++i) {
+    for (int i = nd - 1; i >= 0; --i) {
         size_t len = strlen(buf);
         snprintf(buf + len, n - len, "[%d~%d]", los[i], his[i]);
     }
