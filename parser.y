@@ -70,6 +70,37 @@ static void sym_type_to_string(Sym *s, char *buf, size_t n);
 static ParamList *paramlist_append(ParamList *head, Type *ty);
 static void mark_function_return(const char *name, LocType loc);
 
+/* --- per-identifier source location tracking (by pointer identity) --- */
+typedef struct NameLocTag {
+    const char *p;      /* points to the exact strdup'd string stored in list */
+    LocType     loc;    /* token location for that occurrence */
+    struct NameLocTag *next;
+} NameLoc;
+
+static NameLoc *g_name_locs = NULL;
+
+static void remember_name_loc(const char *p, LocType loc) {
+    NameLoc *n = (NameLoc*)malloc(sizeof(NameLoc));
+    n->p = p; n->loc = loc; n->next = g_name_locs; g_name_locs = n;
+}
+
+static LocType find_name_loc_or(const char *p, LocType fallback) {
+    for (NameLoc *n = g_name_locs; n; n = n->next)
+        if (n->p == p) return n->loc;   /* pointer identity matters */
+    return fallback;
+}
+
+/* --- minimal cons for arbitrary pointers (no extra strdup) --- */
+static Cons consPtr(void *ptr, Cons tail) {
+    Cons c = (Cons)malloc(sizeof(ConsStr));
+    c->car = ptr; c->cdr = tail; return c;
+}
+static Cons appendPtr(Cons list, void *ptr) {
+    Cons n = consPtr(ptr, NULL);
+    if (!list) return n;
+    Cons q = list; while (q->cdr) q = q->cdr; q->cdr = n; return list;
+}
+
 
 /* ------------ small helpers to report semantic errors ------------ */
 
@@ -559,17 +590,15 @@ proc_decl
 var_decl
   : VAR identifier_list COLON type SEMICOLON
     {
-      /* insert each identifier as variable in current scope */
       Cons ids = $2;
       for (Cons c = ids; c; c = c->cdr) {
-          char *name = (char*)c->car;
-          insert_symbol(name, OBJ_VAR, $4, NULL, @2);
+          char   *name = (char*)c->car;                       /* the strdup'd pointer we stored */
+          LocType loc  = find_name_loc_or(name, @2);          /* recover the exact token loc */
+          insert_symbol(name, OBJ_VAR, $4, NULL, loc);        /* <-- use per-identifier loc */
       }
-
-      /* special: handle redefinition of global a at line 15 */
-      /* The generic insert_symbol already reports REDEF_VAR for same scope */
     }
   ;
+
 
 
 decls_opt
@@ -581,12 +610,19 @@ decls_opt
 
 identifier_list
   : IDENTIFIER
-    { $$ = consStr($1, NULL); }
+    {
+      char *p = strdup($1);
+      remember_name_loc(p, @1);
+      $$ = consPtr(p, NULL);            /* store pointer p directly */
+    }
   | identifier_list COMMA IDENTIFIER
     {
-      $$ = appendStr($1, $3);   /* preserves a, b, c order */
+      char *p = strdup($3);
+      remember_name_loc(p, @3);
+      $$ = appendPtr($1, p);            /* append pointer p directly */
     }
   ;
+
 
 
 param_section_opt
