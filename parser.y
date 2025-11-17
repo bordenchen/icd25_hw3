@@ -253,11 +253,22 @@ static ParamList *paramlist_append(ParamList *head, Type *ty) {
 /* ---- check actual arguments against formal parameter list ---- */
 static Type *node_type(Node n);
 
+static Cons reverse_list(Cons p) {
+    Cons prev = NULL, next;
+    while (p) {
+        next = p->cdr;
+        p->cdr = prev;
+        prev = p;
+        p = next;
+    }
+    return prev;
+}
+
 static void check_call_args(LocType loc, const char *name, Cons actuals) {
     /* Find the function/procedure symbol */
+    actuals = reverse_list(actuals);
     Sym *s = lookup_symbol(name);
     if (!s || (s->kind != OBJ_FUNC && s->kind != OBJ_PROC)) {
-        /* already handled by report_undec_fun elsewhere */
         return;
     }
 
@@ -410,7 +421,7 @@ static Type *type_of_identifier(const char *name, LocType loc) {
            Here we just propagate “unknown type” as NULL to avoid duplicates. */
         return NULL;
     }
-    
+
     /* Functions already have a proper return type in s->type.
        Variables / array types also use s->type.
        For procedures/programs, fabricate a non-numeric "void" type so that:
